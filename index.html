@@ -767,6 +767,7 @@
 
     function showToast(message, type = 'success') {
       const container = document.getElementById('toast-container');
+      if (!container) return;
       const toastId = 'toast-' + Date.now();
       const bgClass = type === 'success' ? 'bg-success text-white' :
                       type === 'danger' ? 'bg-danger text-white' :
@@ -790,6 +791,32 @@
       toast.show();
       toastEl.addEventListener('hidden.bs.toast', () => toastEl.remove());
     }
+
+    // Safe iframe alert, confirm, and prompt shims (prevents browser sandbox blocking in iframe)
+    try {
+      window.alert = function(message) {
+        showToast(String(message), 'warning');
+      };
+      const _origConfirm = window.confirm;
+      window.confirm = function(message) {
+        try {
+          return _origConfirm(message);
+        } catch (e) {
+          console.warn('Iframe blocked native confirm:', e);
+          return true;
+        }
+      };
+      const _origPrompt = window.prompt;
+      window.prompt = function(message, defaultVal) {
+        try {
+          const val = _origPrompt(message, defaultVal);
+          return val !== null ? val : (defaultVal || '');
+        } catch (e) {
+          console.warn('Iframe blocked native prompt:', e);
+          return defaultVal || '';
+        }
+      };
+    } catch (e) {}
 
     async function logAudit(action, reference, description) {
       try {

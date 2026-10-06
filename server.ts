@@ -39,7 +39,7 @@ async function callWithFallback(fn: () => Promise<any>, fallbackFn: () => Promis
 // --------------------------------------------------------------------------
 app.post('/api/chat', async (req, res) => {
   try {
-    const { messages, model = 'gemini-3.5-flash', systemInstruction } = req.body;
+    const { messages, model = 'gemini-3.8-flash', systemInstruction } = req.body;
     
     // Default system prompt tailored for Business Management & Accounting
     const sysInstruction = systemInstruction || 
@@ -61,7 +61,7 @@ app.post('/api/chat', async (req, res) => {
 
     const selectedModel = model === 'gemini-3.1-pro-preview' ? 'gemini-3.1-pro-preview' :
                           model === 'gemini-3.1-flash-lite' ? 'gemini-3.1-flash-lite' :
-                          'gemini-3.5-flash';
+                          'gemini-3.8-flash';
 
     const response = await callWithFallback(
       () => ai.models.generateContent({
@@ -97,21 +97,21 @@ app.post('/api/chat', async (req, res) => {
 // --------------------------------------------------------------------------
 app.post('/api/search-grounding', async (req, res) => {
   try {
-    const { prompt, model = 'gemini-3.5-flash' } = req.body;
+    const { prompt, model = 'gemini-3.8-flash' } = req.body;
     if (!prompt) {
       return res.status(400).json({ error: 'Prompt is required' });
     }
 
     const response = await callWithFallback(
       () => ai.models.generateContent({
-        model: 'gemini-3.5-flash',
+        model: 'gemini-3.8-flash',
         contents: prompt,
         config: {
           tools: [{ googleSearch: {} }],
         },
       }),
       () => ai.models.generateContent({
-        model: 'gemini-3.8-flash',
+        model: 'gemini-3.1-flash-lite',
         contents: prompt,
         config: {
           tools: [{ googleSearch: {} }],
@@ -156,7 +156,7 @@ app.post('/api/maps-grounding', async (req, res) => {
 
     const response = await callWithFallback(
       () => ai.models.generateContent({
-        model: 'gemini-3.5-flash',
+        model: 'gemini-3.8-flash',
         contents: prompt,
         config: {
           tools: [{ googleMaps: {} }],
@@ -164,7 +164,7 @@ app.post('/api/maps-grounding', async (req, res) => {
         },
       }),
       () => ai.models.generateContent({
-        model: 'gemini-3.8-flash',
+        model: 'gemini-3.1-flash-lite',
         contents: prompt,
         config: {
           tools: [{ googleMaps: {} }],
