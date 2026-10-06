@@ -11,6 +11,8 @@
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
   <!-- Chart.js CDN -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <!-- Firebase Initialization Module (early load in head) -->
+  <script type="module" src="/src/firebase.js"></script>
   <script>
     // Immediate pre-render session check: prevents login screen flash on page reload
     try {
@@ -18,6 +20,14 @@
         document.documentElement.classList.add('has-active-session');
       }
     } catch (e) {}
+
+    // Safe immediate window.FIREBASE shell to prevent undefined destructuring errors before modules finish loading
+    window.FIREBASE = window.FIREBASE || {
+      ready: false,
+      get db() { return window.__FIREBASE__?.db || null; },
+      get auth() { return window.__FIREBASE__?.auth || null; }
+    };
+    window.__FIREBASE__ = window.FIREBASE;
   </script>
   <style>
     html.has-active-session #login-overlay {
@@ -490,7 +500,8 @@
     };
 
     async function waitForFirebase() {
-      if (window.__FIREBASE__ && window.__FIREBASE__.ready) return window.__FIREBASE__;
+      const existing = window.FIREBASE || window.__FIREBASE__;
+      if (existing && existing.ready && existing.db) return existing;
       return new Promise((resolve) => {
         let resolved = false;
         const cleanup = () => {
@@ -502,28 +513,34 @@
         const handler = (e) => {
           if (!resolved) {
             cleanup();
-            resolve(e.detail);
+            const inst = e.detail || window.FIREBASE || window.__FIREBASE__;
+            resolve(inst);
           }
         };
         window.addEventListener('firebase:ready', handler, { once: true });
         const interval = setInterval(() => {
-          if (window.__FIREBASE__ && window.__FIREBASE__.ready && !resolved) {
+          const inst = window.FIREBASE || window.__FIREBASE__;
+          if (inst && inst.ready && inst.db && !resolved) {
             cleanup();
-            resolve(window.__FIREBASE__);
+            resolve(inst);
           }
-        }, 50);
+        }, 25);
         const timeoutTimer = setTimeout(() => {
           if (!resolved) {
             cleanup();
-            resolve(window.__FIREBASE__ || null);
+            const inst = window.FIREBASE || window.__FIREBASE__;
+            resolve(inst || null);
           }
-        }, 3000);
+        }, 5000);
       });
     }
 
     async function openDatabase() {
       const fb = await waitForFirebase();
-      if (!listenersInitialized) {
+      if (!fb || !fb.db) {
+        console.warn('Firebase Firestore initialization not ready yet, working in offline-first mode.');
+      }
+      if (!listenersInitialized && fb && fb.db) {
         initFirestoreListeners();
         listenersInitialized = true;
       }
@@ -531,8 +548,9 @@
     }
 
     function initFirestoreListeners() {
-      if (!window.__FIREBASE__) return;
-      const { db, collection, onSnapshot } = window.__FIREBASE__;
+      const fb = window.FIREBASE || window.__FIREBASE__;
+      if (!fb || !fb.db) return;
+      const { db, collection, onSnapshot } = fb;
 
       STORES.forEach(storeName => {
         try {
@@ -598,14 +616,20 @@
     }
 
     async function dbGet(storeName, key) {
-      await waitForFirebase();
-      const { db, doc, getDoc, handleFirestoreError, OperationType } = window.__FIREBASE__;
+      const fb = await waitForFirebase();
       const strKey = String(key);
       const path = `${storeName}/${strKey}`;
+
+      if (firestoreCache[storeName] && firestoreCache[storeName][strKey]) {
+        return firestoreCache[storeName][strKey];
+      }
+
+      if (!fb || !fb.db) {
+        return firestoreCache[storeName]?.[strKey] || null;
+      }
+
+      const { db, doc, getDoc, handleFirestoreError, OperationType } = fb;
       try {
-        if (firestoreCache[storeName] && firestoreCache[storeName][strKey]) {
-          return firestoreCache[storeName][strKey];
-        }
         const docRef = doc(db, storeName, strKey);
         const docSnap = await getDoc(docRef);
         if (docSnap.exists()) {
@@ -617,7 +641,7 @@
         return null;
       } catch (err) {
         try {
-          handleFirestoreError(err, OperationType.GET, path);
+          if (handleFirestoreError) handleFirestoreError(err, OperationType.GET, path);
         } catch (e) {
           console.warn(`Firestore get notice for ${path}:`, e.message);
         }
@@ -626,13 +650,18 @@
     }
 
     async function dbGetAll(storeName) {
-      await waitForFirebase();
-      const { db, collection, getDocs, handleFirestoreError, OperationType } = window.__FIREBASE__;
+      // Return existing real-time cache if store has loaded or has records
+      if (storeLoaded[storeName] || (firestoreCache[storeName] && Object.keys(firestoreCache[storeName]).length > 0)) {
+        return Object.values(firestoreCache[storeName] || {});
+      }
+
+      const fb = await waitForFirebase();
+      if (!fb || !fb.db) {
+        return Object.values(firestoreCache[storeName] || {});
+      }
+
+      const { db, collection, getDocs, handleFirestoreError, OperationType } = fb;
       try {
-        // Return existing real-time cache if store has loaded or has records
-        if (storeLoaded[storeName] || (firestoreCache[storeName] && Object.keys(firestoreCache[storeName]).length > 0)) {
-          return Object.values(firestoreCache[storeName] || {});
-        }
         const colRef = collection(db, storeName);
         const snapshot = await getDocs(colRef);
         const items = [];
@@ -646,7 +675,7 @@
         return items;
       } catch (err) {
         try {
-          handleFirestoreError(err, OperationType.LIST, storeName);
+          if (handleFirestoreError) handleFirestoreError(err, OperationType.LIST, storeName);
         } catch (e) {
           console.warn(`Firestore list notice for ${storeName}:`, e.message);
         }
@@ -655,56 +684,67 @@
     }
 
     async function dbPut(storeName, item) {
-      await waitForFirebase();
-      const { db, doc, setDoc, handleFirestoreError, OperationType } = window.__FIREBASE__;
-      
       // Ensure an ID is present
       if (!item.id && storeName !== 'settings') {
         item.id = generateId(storeName.substring(0, 3).toUpperCase());
       }
       const key = storeName === 'settings' ? item.key : item.id;
       const strKey = String(key);
-      const path = `${storeName}/${strKey}`;
-
-      // Cleanse item of undefined fields so Firestore never throws unsupported field value error
       const cleanItem = JSON.parse(JSON.stringify(item));
 
-      try {
-        firestoreCache[storeName] = firestoreCache[storeName] || {};
-        firestoreCache[storeName][strKey] = cleanItem;
+      firestoreCache[storeName] = firestoreCache[storeName] || {};
+      firestoreCache[storeName][strKey] = cleanItem;
 
+      const fb = await waitForFirebase();
+      if (!fb || !fb.db) {
+        return cleanItem;
+      }
+
+      const { db, doc, setDoc, handleFirestoreError, OperationType } = fb;
+      const path = `${storeName}/${strKey}`;
+      try {
         const docRef = doc(db, storeName, strKey);
         await setDoc(docRef, cleanItem);
         return cleanItem;
       } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, path);
+        if (handleFirestoreError) handleFirestoreError(err, OperationType.WRITE, path);
         throw err;
       }
     }
 
     async function dbDelete(storeName, key) {
-      await waitForFirebase();
-      const { db, doc, deleteDoc, handleFirestoreError, OperationType } = window.__FIREBASE__;
       const strKey = String(key);
+      if (firestoreCache[storeName]) {
+        delete firestoreCache[storeName][strKey];
+      }
+
+      const fb = await waitForFirebase();
+      if (!fb || !fb.db) {
+        return true;
+      }
+
+      const { db, doc, deleteDoc, handleFirestoreError, OperationType } = fb;
       const path = `${storeName}/${strKey}`;
       try {
-        if (firestoreCache[storeName]) {
-          delete firestoreCache[storeName][strKey];
-        }
         const docRef = doc(db, storeName, strKey);
         await deleteDoc(docRef);
         return true;
       } catch (err) {
-        handleFirestoreError(err, OperationType.DELETE, path);
+        if (handleFirestoreError) handleFirestoreError(err, OperationType.DELETE, path);
         throw err;
       }
     }
 
     async function dbClear(storeName) {
-      await waitForFirebase();
-      const { db, collection, getDocs, deleteDoc, handleFirestoreError, OperationType } = window.__FIREBASE__;
+      firestoreCache[storeName] = {};
+
+      const fb = await waitForFirebase();
+      if (!fb || !fb.db) {
+        return true;
+      }
+
+      const { db, collection, getDocs, deleteDoc, handleFirestoreError, OperationType } = fb;
       try {
-        firestoreCache[storeName] = {};
         const colRef = collection(db, storeName);
         const snapshot = await getDocs(colRef);
         const deletePromises = [];
@@ -714,7 +754,7 @@
         await Promise.all(deletePromises);
         return true;
       } catch (err) {
-        handleFirestoreError(err, OperationType.DELETE, storeName);
+        if (handleFirestoreError) handleFirestoreError(err, OperationType.DELETE, storeName);
         throw err;
       }
     }
@@ -876,7 +916,7 @@
     };
 
     async function initializeSystem() {
-      // 1. Check and restore active user session from localStorage immediately to eliminate login screen on reload
+      // 1. Check and restore active user session from localStorage immediately to eliminate login screen flash
       const savedSession = localStorage.getItem('dms_active_session') || sessionStorage.getItem('dms_active_session');
       let sessionActive = false;
       if (savedSession) {
@@ -885,7 +925,15 @@
           if (parsedUser && parsedUser.id) {
             currentUser = parsedUser;
             sessionActive = true;
-            onUserLoggedIn(true);
+            document.documentElement.classList.add('has-active-session');
+            const loginEl = document.getElementById('login-overlay');
+            if (loginEl) loginEl.classList.add('d-none');
+            const appEl = document.getElementById('app-container');
+            if (appEl) appEl.classList.remove('d-none');
+            const topUserEl = document.getElementById('topbar-user-name');
+            if (topUserEl) topUserEl.innerText = currentUser.name || currentUser.username;
+            const topRoleEl = document.getElementById('topbar-user-role');
+            if (topRoleEl) topRoleEl.innerText = currentUser.role === 'Admin' ? 'Master Admin' : currentUser.role;
           }
         } catch (e) {
           console.error('Session restore failed:', e);
@@ -896,7 +944,7 @@
         showLoginOverlay();
       }
 
-      // 2. Open Firestore central database and initialize real-time listeners
+      // 2. Open Firestore central database and initialize real-time listeners BEFORE loading modules
       try {
         await openDatabase();
 
@@ -1012,12 +1060,15 @@
           });
         }
 
-        // If user is already active, seamlessly refresh current view with freshly confirmed Firestore data
-        if (sessionActive && activePage) {
-          navigateTo(activePage, true);
+        // 3. Render active dashboard once Firebase is fully ready
+        if (sessionActive) {
+          onUserLoggedIn(true);
         }
       } catch (err) {
         console.error('System initialization error:', err);
+        if (sessionActive) {
+          onUserLoggedIn(true);
+        }
       }
     }
 
@@ -1193,10 +1244,11 @@
           gBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status"></span>Connecting to Google...';
         }
         await waitForFirebase();
-        if (!window.__FIREBASE__?.loginWithGoogle) {
+        const fb = window.FIREBASE || window.__FIREBASE__;
+        if (!fb?.loginWithGoogle) {
           throw new Error('Google Sign-In is initializing...');
         }
-        const gUser = await window.__FIREBASE__.loginWithGoogle();
+        const gUser = await fb.loginWithGoogle();
         if (gUser) {
           const users = await dbGetAll('users');
           let appUser = users.find(u => u.email === gUser.email || u.id === gUser.uid);
@@ -1300,9 +1352,10 @@
       if (currentUser) {
         await logAudit('Logout', currentUser.username, 'User logged out');
       }
-      if (window.__FIREBASE__?.auth) {
+      const fb = window.FIREBASE || window.__FIREBASE__;
+      if (fb?.auth && fb?.signOut) {
         try {
-          await window.__FIREBASE__.signOut(window.__FIREBASE__.auth);
+          await fb.signOut(fb.auth);
         } catch (e) {
           console.warn('Firebase sign out notice:', e);
         }
@@ -1426,6 +1479,9 @@
 
       // Render view based on page
       try {
+        // Ensure Firebase is fully initialized before any module renders or queries Firestore
+        await waitForFirebase();
+
         switch (page) {
           case 'dashboard':
             await renderDashboardView(container);

@@ -1,4 +1,4 @@
-import { initializeApp } from 'firebase/app';
+import { initializeApp, getApps } from 'firebase/app';
 import { 
   getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged 
 } from 'firebase/auth';
@@ -7,24 +7,6 @@ import {
   getDocs, onSnapshot, getDocFromServer, writeBatch 
 } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
-
-// Initialize Firebase App
-const app = initializeApp(firebaseConfig);
-
-// CRITICAL: Initialize Firestore with the specific provisioned databaseId
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
-export const auth = getAuth(app);
-export const googleProvider = new GoogleAuthProvider();
-
-export async function loginWithGoogle() {
-  try {
-    const result = await signInWithPopup(auth, googleProvider);
-    return result.user;
-  } catch (error) {
-    console.error('Google Sign-In Error:', error);
-    throw error;
-  }
-}
 
 // Operation types for standard error handling
 export const OperationType = {
@@ -57,8 +39,48 @@ export function handleFirestoreError(error, operationType, path) {
   throw new Error(JSON.stringify(errInfo));
 }
 
+// 1. Initialize Firebase App first
+let app;
+let auth;
+let db;
+let googleProvider;
+let initError = null;
+
+try {
+  if (!firebaseConfig || !firebaseConfig.projectId) {
+    throw new Error('Firebase configuration is missing or invalid.');
+  }
+
+  const existingApps = getApps();
+  app = existingApps.length > 0 ? existingApps[0] : initializeApp(firebaseConfig);
+
+  // 2. Initialize Firebase Auth
+  auth = getAuth(app);
+  googleProvider = new GoogleAuthProvider();
+
+  // 3. Initialize Firestore with specific provisioned databaseId
+  db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+} catch (error) {
+  initError = error;
+  console.error('Firebase initialization failed:', error);
+}
+
+export { app, auth, db, googleProvider };
+
+export async function loginWithGoogle() {
+  if (!auth) throw new Error('Firebase Auth is not initialized');
+  try {
+    const result = await signInWithPopup(auth, googleProvider);
+    return result.user;
+  } catch (error) {
+    console.error('Google Sign-In Error:', error);
+    throw error;
+  }
+}
+
 // Test initial connection as required by skill
 export async function testConnection() {
+  if (!db) return;
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
   } catch (error) {
@@ -68,8 +90,8 @@ export async function testConnection() {
   }
 }
 
-// Attach to window for global access across the application
-window.__FIREBASE__ = {
+// Create the complete Firebase instance object
+const firebaseInstance = {
   app,
   db,
   auth,
@@ -90,7 +112,14 @@ window.__FIREBASE__ = {
   OperationType,
   handleFirestoreError,
   testConnection,
-  ready: true
+  ready: !initError && !!db,
+  error: initError
 };
 
-window.dispatchEvent(new CustomEvent('firebase:ready', { detail: window.__FIREBASE__ }));
+// 4. Attach window.FIREBASE and window.__FIREBASE__ before any module accesses it
+window.FIREBASE = firebaseInstance;
+window.__FIREBASE__ = firebaseInstance;
+
+// Dispatch event for any asynchronous listeners
+window.dispatchEvent(new CustomEvent('firebase:ready', { detail: firebaseInstance }));
+
