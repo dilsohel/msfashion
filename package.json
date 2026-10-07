@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build",
+    "bundle:firebase": "esbuild src/firebase.js --bundle --format=iife --outfile=firebase-bundle.js && mkdir -p public && cp firebase-bundle.js public/firebase-bundle.js",
+    "build": "npm run bundle:firebase && vite build",
     "start": "node server.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",

@@ -11,8 +11,6 @@
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
   <!-- Chart.js CDN -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <!-- Firebase Initialization Module (early load in head) -->
-  <script type="module" src="/src/firebase.js"></script>
   <script>
     // Immediate pre-render session check: prevents login screen flash on page reload
     try {
@@ -20,14 +18,6 @@
         document.documentElement.classList.add('has-active-session');
       }
     } catch (e) {}
-
-    // Safe immediate window.FIREBASE shell to prevent undefined destructuring errors before modules finish loading
-    window.FIREBASE = window.FIREBASE || {
-      ready: false,
-      get db() { return window.__FIREBASE__?.db || null; },
-      get auth() { return window.__FIREBASE__?.auth || null; }
-    };
-    window.__FIREBASE__ = window.FIREBASE;
   </script>
   <style>
     html.has-active-session #login-overlay {
@@ -434,15 +424,27 @@
   <!-- Bootstrap 5 JS Bundle -->
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 
-  <!-- Firebase Integration Module -->
-  <script type="module" src="/src/firebase.js"></script>
+  <!-- Firebase Standalone Integration (Works on GitHub Pages, static hosting, and local preview) -->
+  <script src="./firebase-bundle.js"></script>
 
   <script>
     /* ==========================================================================
        DMS ENTERPRISE - STANDALONE OFFLINE BUSINESS & ACCOUNTING SYSTEM
-       Single-File IndexedDB Architecture
+       Single-File IndexedDB & Firebase Architecture
        Owner: Dil Mohammad Sohel | Phone: 01604703820
        ========================================================================== */
+
+    // Static Firebase configuration for production GitHub Pages and preview environments
+    const FIREBASE_CONFIG = {
+      projectId: "gen-lang-client-0529394373",
+      appId: "1:931926308811:web:156f5d2c1ccb87f9ece84e",
+      apiKey: "AIzaSyAHYy44kSelXHBy4G6Y0gme2cdHnxK_2sk",
+      authDomain: "gen-lang-client-0529394373.firebaseapp.com",
+      firestoreDatabaseId: "ai-studio-businessmanageme-a35ecdfe-7a21-4c7e-b2eb-fbf669f05f71",
+      storageBucket: "gen-lang-client-0529394373.firebasestorage.app",
+      messagingSenderId: "931926308811",
+      oAuthClientId: "931926308811-nmsah6goq0vqos28p7logvnl1k01am6p.apps.googleusercontent.com"
+    };
 
     // Current session state
     let currentUser = null;
@@ -499,57 +501,111 @@
       notifications: ['notifications']
     };
 
+    // Resilient Firebase initialization guaranteeing Auth & Firestore are available
+    let firebaseInitPromise = null;
+    async function ensureFirebase() {
+      if (window.__FIREBASE__ && window.__FIREBASE__.ready) {
+        return window.__FIREBASE__;
+      }
+      if (firebaseInitPromise) {
+        return firebaseInitPromise;
+      }
+
+      firebaseInitPromise = (async () => {
+        if (window.__FIREBASE__ && window.__FIREBASE__.ready) {
+          return window.__FIREBASE__;
+        }
+
+        try {
+          // Dynamic import from official Google Firebase CDN if bundle was not loaded synchronously
+          const [appMod, authMod, firestoreMod] = await Promise.all([
+            import('https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js'),
+            import('https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js'),
+            import('https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js')
+          ]);
+
+          const app = appMod.getApps().length > 0 ? appMod.getApp() : appMod.initializeApp(FIREBASE_CONFIG);
+          const db = firestoreMod.getFirestore(app, FIREBASE_CONFIG.firestoreDatabaseId);
+          const auth = authMod.getAuth(app);
+          const googleProvider = new authMod.GoogleAuthProvider();
+
+          const OperationType = {
+            CREATE: 'create',
+            UPDATE: 'update',
+            DELETE: 'delete',
+            LIST: 'list',
+            GET: 'get',
+            WRITE: 'write',
+          };
+
+          function handleFirestoreError(error, operationType, path) {
+            console.error('Firestore Error:', operationType, path, error);
+            throw error;
+          }
+
+          async function loginWithGoogle() {
+            try {
+              const res = await authMod.signInWithPopup(auth, googleProvider);
+              return res.user;
+            } catch (err) {
+              console.error('Google Sign-In Error:', err);
+              throw err;
+            }
+          }
+
+          window.__FIREBASE__ = {
+            app,
+            db,
+            auth,
+            googleProvider,
+            signInWithPopup: authMod.signInWithPopup,
+            signOut: authMod.signOut,
+            loginWithGoogle,
+            onAuthStateChanged: authMod.onAuthStateChanged,
+            doc: firestoreMod.doc,
+            getDoc: firestoreMod.getDoc,
+            setDoc: firestoreMod.setDoc,
+            deleteDoc: firestoreMod.deleteDoc,
+            collection: firestoreMod.collection,
+            getDocs: firestoreMod.getDocs,
+            onSnapshot: firestoreMod.onSnapshot,
+            getDocFromServer: firestoreMod.getDocFromServer,
+            writeBatch: firestoreMod.writeBatch,
+            OperationType,
+            handleFirestoreError,
+            ready: true
+          };
+
+          window.dispatchEvent(new CustomEvent('firebase:ready', { detail: window.__FIREBASE__ }));
+          return window.__FIREBASE__;
+        } catch (err) {
+          console.error('Firebase initialization error from CDN:', err);
+          throw err;
+        }
+      })();
+
+      return firebaseInitPromise;
+    }
+
     async function waitForFirebase() {
-      const existing = window.FIREBASE || window.__FIREBASE__;
-      if (existing && existing.ready && existing.db) return existing;
-      return new Promise((resolve) => {
-        let resolved = false;
-        const cleanup = () => {
-          resolved = true;
-          window.removeEventListener('firebase:ready', handler);
-          clearInterval(interval);
-          clearTimeout(timeoutTimer);
-        };
-        const handler = (e) => {
-          if (!resolved) {
-            cleanup();
-            const inst = e.detail || window.FIREBASE || window.__FIREBASE__;
-            resolve(inst);
-          }
-        };
-        window.addEventListener('firebase:ready', handler, { once: true });
-        const interval = setInterval(() => {
-          const inst = window.FIREBASE || window.__FIREBASE__;
-          if (inst && inst.ready && inst.db && !resolved) {
-            cleanup();
-            resolve(inst);
-          }
-        }, 25);
-        const timeoutTimer = setTimeout(() => {
-          if (!resolved) {
-            cleanup();
-            const inst = window.FIREBASE || window.__FIREBASE__;
-            resolve(inst || null);
-          }
-        }, 5000);
-      });
+      if (window.__FIREBASE__ && window.__FIREBASE__.ready) {
+        return window.__FIREBASE__;
+      }
+      return await ensureFirebase();
     }
 
     async function openDatabase() {
       const fb = await waitForFirebase();
-      if (!fb || !fb.db) {
-        console.warn('Firebase Firestore initialization not ready yet, working in offline-first mode.');
-      }
-      if (!listenersInitialized && fb && fb.db) {
-        initFirestoreListeners();
+      if (!listenersInitialized && fb && fb.ready) {
+        initFirestoreListeners(fb);
         listenersInitialized = true;
       }
       return fb;
     }
 
-    function initFirestoreListeners() {
-      const fb = window.FIREBASE || window.__FIREBASE__;
-      if (!fb || !fb.db) return;
+    function initFirestoreListeners(fbParam) {
+      const fb = fbParam || window.__FIREBASE__;
+      if (!fb || !fb.ready) return;
       const { db, collection, onSnapshot } = fb;
 
       STORES.forEach(storeName => {
@@ -617,19 +673,13 @@
 
     async function dbGet(storeName, key) {
       const fb = await waitForFirebase();
+      const { db, doc, getDoc, handleFirestoreError, OperationType } = fb;
       const strKey = String(key);
       const path = `${storeName}/${strKey}`;
-
-      if (firestoreCache[storeName] && firestoreCache[storeName][strKey]) {
-        return firestoreCache[storeName][strKey];
-      }
-
-      if (!fb || !fb.db) {
-        return firestoreCache[storeName]?.[strKey] || null;
-      }
-
-      const { db, doc, getDoc, handleFirestoreError, OperationType } = fb;
       try {
+        if (firestoreCache[storeName] && firestoreCache[storeName][strKey]) {
+          return firestoreCache[storeName][strKey];
+        }
         const docRef = doc(db, storeName, strKey);
         const docSnap = await getDoc(docRef);
         if (docSnap.exists()) {
@@ -641,7 +691,7 @@
         return null;
       } catch (err) {
         try {
-          if (handleFirestoreError) handleFirestoreError(err, OperationType.GET, path);
+          handleFirestoreError(err, OperationType.GET, path);
         } catch (e) {
           console.warn(`Firestore get notice for ${path}:`, e.message);
         }
@@ -650,18 +700,13 @@
     }
 
     async function dbGetAll(storeName) {
-      // Return existing real-time cache if store has loaded or has records
-      if (storeLoaded[storeName] || (firestoreCache[storeName] && Object.keys(firestoreCache[storeName]).length > 0)) {
-        return Object.values(firestoreCache[storeName] || {});
-      }
-
       const fb = await waitForFirebase();
-      if (!fb || !fb.db) {
-        return Object.values(firestoreCache[storeName] || {});
-      }
-
       const { db, collection, getDocs, handleFirestoreError, OperationType } = fb;
       try {
+        // Return existing real-time cache if store has loaded or has records
+        if (storeLoaded[storeName] || (firestoreCache[storeName] && Object.keys(firestoreCache[storeName]).length > 0)) {
+          return Object.values(firestoreCache[storeName] || {});
+        }
         const colRef = collection(db, storeName);
         const snapshot = await getDocs(colRef);
         const items = [];
@@ -675,7 +720,7 @@
         return items;
       } catch (err) {
         try {
-          if (handleFirestoreError) handleFirestoreError(err, OperationType.LIST, storeName);
+          handleFirestoreError(err, OperationType.LIST, storeName);
         } catch (e) {
           console.warn(`Firestore list notice for ${storeName}:`, e.message);
         }
@@ -684,67 +729,56 @@
     }
 
     async function dbPut(storeName, item) {
+      const fb = await waitForFirebase();
+      const { db, doc, setDoc, handleFirestoreError, OperationType } = fb;
+      
       // Ensure an ID is present
       if (!item.id && storeName !== 'settings') {
         item.id = generateId(storeName.substring(0, 3).toUpperCase());
       }
       const key = storeName === 'settings' ? item.key : item.id;
       const strKey = String(key);
+      const path = `${storeName}/${strKey}`;
+
+      // Cleanse item of undefined fields so Firestore never throws unsupported field value error
       const cleanItem = JSON.parse(JSON.stringify(item));
 
-      firestoreCache[storeName] = firestoreCache[storeName] || {};
-      firestoreCache[storeName][strKey] = cleanItem;
-
-      const fb = await waitForFirebase();
-      if (!fb || !fb.db) {
-        return cleanItem;
-      }
-
-      const { db, doc, setDoc, handleFirestoreError, OperationType } = fb;
-      const path = `${storeName}/${strKey}`;
       try {
+        firestoreCache[storeName] = firestoreCache[storeName] || {};
+        firestoreCache[storeName][strKey] = cleanItem;
+
         const docRef = doc(db, storeName, strKey);
         await setDoc(docRef, cleanItem);
         return cleanItem;
       } catch (err) {
-        if (handleFirestoreError) handleFirestoreError(err, OperationType.WRITE, path);
+        handleFirestoreError(err, OperationType.WRITE, path);
         throw err;
       }
     }
 
     async function dbDelete(storeName, key) {
-      const strKey = String(key);
-      if (firestoreCache[storeName]) {
-        delete firestoreCache[storeName][strKey];
-      }
-
       const fb = await waitForFirebase();
-      if (!fb || !fb.db) {
-        return true;
-      }
-
       const { db, doc, deleteDoc, handleFirestoreError, OperationType } = fb;
+      const strKey = String(key);
       const path = `${storeName}/${strKey}`;
       try {
+        if (firestoreCache[storeName]) {
+          delete firestoreCache[storeName][strKey];
+        }
         const docRef = doc(db, storeName, strKey);
         await deleteDoc(docRef);
         return true;
       } catch (err) {
-        if (handleFirestoreError) handleFirestoreError(err, OperationType.DELETE, path);
+        handleFirestoreError(err, OperationType.DELETE, path);
         throw err;
       }
     }
 
     async function dbClear(storeName) {
-      firestoreCache[storeName] = {};
-
       const fb = await waitForFirebase();
-      if (!fb || !fb.db) {
-        return true;
-      }
-
       const { db, collection, getDocs, deleteDoc, handleFirestoreError, OperationType } = fb;
       try {
+        firestoreCache[storeName] = {};
         const colRef = collection(db, storeName);
         const snapshot = await getDocs(colRef);
         const deletePromises = [];
@@ -754,7 +788,7 @@
         await Promise.all(deletePromises);
         return true;
       } catch (err) {
-        if (handleFirestoreError) handleFirestoreError(err, OperationType.DELETE, storeName);
+        handleFirestoreError(err, OperationType.DELETE, storeName);
         throw err;
       }
     }
@@ -807,7 +841,6 @@
 
     function showToast(message, type = 'success') {
       const container = document.getElementById('toast-container');
-      if (!container) return;
       const toastId = 'toast-' + Date.now();
       const bgClass = type === 'success' ? 'bg-success text-white' :
                       type === 'danger' ? 'bg-danger text-white' :
@@ -831,32 +864,6 @@
       toast.show();
       toastEl.addEventListener('hidden.bs.toast', () => toastEl.remove());
     }
-
-    // Safe iframe alert, confirm, and prompt shims (prevents browser sandbox blocking in iframe)
-    try {
-      window.alert = function(message) {
-        showToast(String(message), 'warning');
-      };
-      const _origConfirm = window.confirm;
-      window.confirm = function(message) {
-        try {
-          return _origConfirm(message);
-        } catch (e) {
-          console.warn('Iframe blocked native confirm:', e);
-          return true;
-        }
-      };
-      const _origPrompt = window.prompt;
-      window.prompt = function(message, defaultVal) {
-        try {
-          const val = _origPrompt(message, defaultVal);
-          return val !== null ? val : (defaultVal || '');
-        } catch (e) {
-          console.warn('Iframe blocked native prompt:', e);
-          return defaultVal || '';
-        }
-      };
-    } catch (e) {}
 
     async function logAudit(action, reference, description) {
       try {
@@ -916,7 +923,7 @@
     };
 
     async function initializeSystem() {
-      // 1. Check and restore active user session from localStorage immediately to eliminate login screen flash
+      // 1. Check and restore active user session from localStorage immediately to eliminate login screen on reload
       const savedSession = localStorage.getItem('dms_active_session') || sessionStorage.getItem('dms_active_session');
       let sessionActive = false;
       if (savedSession) {
@@ -925,15 +932,7 @@
           if (parsedUser && parsedUser.id) {
             currentUser = parsedUser;
             sessionActive = true;
-            document.documentElement.classList.add('has-active-session');
-            const loginEl = document.getElementById('login-overlay');
-            if (loginEl) loginEl.classList.add('d-none');
-            const appEl = document.getElementById('app-container');
-            if (appEl) appEl.classList.remove('d-none');
-            const topUserEl = document.getElementById('topbar-user-name');
-            if (topUserEl) topUserEl.innerText = currentUser.name || currentUser.username;
-            const topRoleEl = document.getElementById('topbar-user-role');
-            if (topRoleEl) topRoleEl.innerText = currentUser.role === 'Admin' ? 'Master Admin' : currentUser.role;
+            onUserLoggedIn(true);
           }
         } catch (e) {
           console.error('Session restore failed:', e);
@@ -944,7 +943,7 @@
         showLoginOverlay();
       }
 
-      // 2. Open Firestore central database and initialize real-time listeners BEFORE loading modules
+      // 2. Open Firestore central database and initialize real-time listeners
       try {
         await openDatabase();
 
@@ -1060,15 +1059,12 @@
           });
         }
 
-        // 3. Render active dashboard once Firebase is fully ready
-        if (sessionActive) {
-          onUserLoggedIn(true);
+        // If user is already active, seamlessly refresh current view with freshly confirmed Firestore data
+        if (sessionActive && activePage) {
+          navigateTo(activePage, true);
         }
       } catch (err) {
         console.error('System initialization error:', err);
-        if (sessionActive) {
-          onUserLoggedIn(true);
-        }
       }
     }
 
@@ -1243,8 +1239,7 @@
           gBtn.disabled = true;
           gBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status"></span>Connecting to Google...';
         }
-        await waitForFirebase();
-        const fb = window.FIREBASE || window.__FIREBASE__;
+        const fb = await waitForFirebase();
         if (!fb?.loginWithGoogle) {
           throw new Error('Google Sign-In is initializing...');
         }
@@ -1352,13 +1347,13 @@
       if (currentUser) {
         await logAudit('Logout', currentUser.username, 'User logged out');
       }
-      const fb = window.FIREBASE || window.__FIREBASE__;
-      if (fb?.auth && fb?.signOut) {
-        try {
+      try {
+        const fb = await waitForFirebase();
+        if (fb?.auth && fb?.signOut) {
           await fb.signOut(fb.auth);
-        } catch (e) {
-          console.warn('Firebase sign out notice:', e);
         }
+      } catch (e) {
+        console.warn('Firebase sign out notice:', e);
       }
       showLoginOverlay();
       showToast('You have been logged out safely.', 'info');
@@ -1479,9 +1474,6 @@
 
       // Render view based on page
       try {
-        // Ensure Firebase is fully initialized before any module renders or queries Firestore
-        await waitForFirebase();
-
         switch (page) {
           case 'dashboard':
             await renderDashboardView(container);
@@ -2346,8 +2338,14 @@
                     <td class="text-success">${formatMoney(s.paidAmount)}</td>
                     <td class="${Number(s.dueAmount) > 0 ? 'text-danger fw-bold' : 'text-muted'}">${formatMoney(s.dueAmount)}</td>
                     <td>
-                      <button class="btn btn-sm btn-light border py-0 px-2" onclick="previewInvoice('${s.id}')" title="Print/View Invoice">
+                      <button class="btn btn-sm btn-light border py-0 px-2 me-1" onclick="previewInvoice('${s.id}')" title="Print/View Invoice">
                         <i class="bi bi-printer text-dark"></i>
+                      </button>
+                      <button class="btn btn-sm btn-light border py-0 px-2 me-1" onclick="openSaleModal('${s.id}')" title="Edit Invoice">
+                        <i class="bi bi-pencil text-dark"></i>
+                      </button>
+                      <button class="btn btn-sm btn-light border py-0 px-2 text-danger" onclick="confirmDeleteSale('${s.id}', '${s.invoiceNo}')" title="Delete Invoice">
+                        <i class="bi bi-trash text-danger"></i>
                       </button>
                     </td>
                   </tr>
@@ -3872,8 +3870,14 @@
                     <td class="${Number(s.dueAmount) > 0 ? 'text-danger fw-bold' : 'text-muted'}">${formatMoney(s.dueAmount)}</td>
                     <td><span class="badge bg-light text-dark border">${s.paymentMethod || 'Cash'}</span></td>
                     <td class="text-end pe-4">
-                      <button class="btn btn-sm btn-outline-primary py-0 px-2 me-1" onclick="previewInvoice('${s.id}')" title="Print Invoice">
+                      <button class="btn btn-sm btn-outline-primary py-0 px-2 me-1" onclick="previewInvoice('${s.id}')" title="Print/View Invoice">
                         <i class="bi bi-printer"></i> Invoice
+                      </button>
+                      <button class="btn btn-sm btn-outline-secondary py-0 px-2 me-1" onclick="openSaleModal('${s.id}')" title="Edit Invoice">
+                        <i class="bi bi-pencil-square"></i> Edit
+                      </button>
+                      <button class="btn btn-sm btn-outline-danger py-0 px-2" onclick="confirmDeleteSale('${s.id}', '${s.invoiceNo}')" title="Delete Invoice">
+                        <i class="bi bi-trash"></i> Delete
                       </button>
                     </td>
                   </tr>
@@ -3892,15 +3896,42 @@
       });
     }
 
-    // Modal for New Sale Entry
-    async function openNewSaleModal() {
+    // Modal for Sale Entry (Create & Edit)
+    function openNewSaleModal() {
+      return openSaleModal(null);
+    }
+
+    async function openSaleModal(saleId = null) {
       const customers = await dbGetAll('customers');
       const products = await dbGetAll('products');
       const banks = await dbGetAll('bankAccounts');
 
+      let existingSale = null;
+      let existingItems = [];
+      const isEdit = !!saleId;
+
+      if (isEdit) {
+        existingSale = await dbGet('sales', saleId);
+        if (!existingSale) {
+          return alert('Sale invoice not found.');
+        }
+        const allSaleItems = await dbGetAll('saleItems');
+        existingItems = allSaleItems.filter(it => it.saleId === saleId);
+      }
+
       const prefix = currentSettings.invoicePrefix || 'INV-';
       const autoInv = prefix + (new Date().getFullYear()) + '-' + Math.floor(1000 + Math.random() * 9000);
       const todayStr = new Date().toISOString().split('T')[0];
+
+      const invNo = isEdit ? existingSale.invoiceNo : autoInv;
+      const dateVal = isEdit ? (existingSale.date || todayStr).split('T')[0] : todayStr;
+      const selectedCustomerId = isEdit ? existingSale.customerId : '';
+      const selectedPayMethod = isEdit ? (existingSale.paymentMethod || 'Cash') : 'Cash';
+      const selectedBankId = isEdit ? (existingSale.bankId || '') : '';
+      const notesVal = isEdit ? (existingSale.notes || '') : '';
+      const discountVal = isEdit ? (existingSale.discount || 0) : 0;
+      const taxRateVal = isEdit ? (existingSale.taxRate !== undefined ? existingSale.taxRate : (existingSale.subtotal > 0 ? (((existingSale.tax || 0) / Math.max(1, (existingSale.subtotal - (existingSale.discount || 0)))) * 100).toFixed(1) : (currentSettings.taxRate || 0))) : (currentSettings.taxRate || 0);
+      const paidVal = isEdit ? (existingSale.paidAmount || 0) : 0;
 
       const modalEl = document.getElementById('modals-placeholder');
       modalEl.innerHTML = `
@@ -3909,43 +3940,45 @@
             <div class="modal-content border-0 shadow rounded-4">
               <div class="modal-header bg-light">
                 <div>
-                  <h5 class="modal-title fw-bold text-dark mb-0"><i class="bi bi-cart-check text-primary me-2"></i>New Sale Invoice</h5>
-                  <small class="text-muted">Enter customer and line items to auto-calculate totals and reduce stock</small>
+                  <h5 class="modal-title fw-bold text-dark mb-0">
+                    <i class="bi ${isEdit ? 'bi-pencil-square text-warning' : 'bi-cart-check text-primary'} me-2"></i>${isEdit ? `Edit Sale Invoice: ${invNo}` : 'New Sale Invoice'}
+                  </h5>
+                  <small class="text-muted">${isEdit ? 'Modify customer, line items, discounts, or payments to update records and inventory' : 'Enter customer and line items to auto-calculate totals and reduce stock'}</small>
                 </div>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
               </div>
-              <form id="sale-form" onsubmit="handleSaveSale(event)">
+              <form id="sale-form" onsubmit="handleSaveSale(event, '${saleId || ''}')">
                 <div class="modal-body p-4">
                   <!-- Invoice Header Fields -->
                   <div class="row g-3 mb-4 bg-light p-3 rounded-3 border">
                     <div class="col-md-3">
                       <label class="form-label small fw-semibold">Invoice Number *</label>
-                      <input type="text" id="s-inv-no" class="form-control form-control-sm fw-bold" value="${autoInv}" required>
+                      <input type="text" id="s-inv-no" class="form-control form-control-sm fw-bold" value="${invNo}" required>
                     </div>
                     <div class="col-md-3">
                       <label class="form-label small fw-semibold">Invoice Date *</label>
-                      <input type="date" id="s-date" class="form-control form-control-sm" value="${todayStr}" required>
+                      <input type="date" id="s-date" class="form-control form-control-sm" value="${dateVal}" required>
                     </div>
                     <div class="col-md-4">
                       <label class="form-label small fw-semibold">Customer *</label>
                       <select id="s-customer" class="form-select form-select-sm" required onchange="onSaleCustomerChange()">
                         <option value="">-- Select Customer / Walk-in --</option>
-                        ${customers.map(c => `<option value="${c.id}" data-due="${c.currentDue || 0}">${c.name} (${c.mobile || 'No Mobile'})</option>`).join('')}
+                        ${customers.map(c => `<option value="${c.id}" ${c.id === selectedCustomerId ? 'selected' : ''} data-due="${c.currentDue || 0}">${c.name} (${c.mobile || 'No Mobile'})</option>`).join('')}
                       </select>
                       <small id="s-cust-due-hint" class="text-danger fw-semibold d-none" style="font-size:0.72rem;"></small>
                     </div>
                     <div class="col-md-2">
                       <label class="form-label small fw-semibold">Payment Method</label>
                       <select id="s-pay-method" class="form-select form-select-sm" onchange="toggleSaleBankSelect()">
-                        <option value="Cash">Cash Drawer</option>
-                        <option value="Bank">Bank Account</option>
-                        <option value="Due">Full Due (Credit)</option>
+                        <option value="Cash" ${selectedPayMethod === 'Cash' ? 'selected' : ''}>Cash Drawer</option>
+                        <option value="Bank" ${selectedPayMethod === 'Bank' ? 'selected' : ''}>Bank Account</option>
+                        <option value="Due" ${selectedPayMethod === 'Due' ? 'selected' : ''}>Full Due (Credit)</option>
                       </select>
                     </div>
-                    <div class="col-md-4 d-none" id="s-bank-col">
+                    <div class="col-md-4 ${selectedPayMethod === 'Bank' ? '' : 'd-none'}" id="s-bank-col">
                       <label class="form-label small fw-semibold">Select Bank Account</label>
                       <select id="s-bank-account" class="form-select form-select-sm">
-                        ${banks.map(b => `<option value="${b.id}">${b.bankName} - ${b.accountNumber}</option>`).join('')}
+                        ${banks.map(b => `<option value="${b.id}" ${b.id === selectedBankId ? 'selected' : ''}>${b.bankName} - ${b.accountNumber}</option>`).join('')}
                       </select>
                     </div>
                   </div>
@@ -3980,7 +4013,7 @@
                   <div class="row g-3 justify-content-end">
                     <div class="col-md-6">
                       <label class="form-label small fw-semibold">Notes / Terms</label>
-                      <textarea id="s-notes" class="form-control" rows="3" placeholder="Warranty details, payment terms..."></textarea>
+                      <textarea id="s-notes" class="form-control" rows="3" placeholder="Warranty details, payment terms...">${notesVal}</textarea>
                     </div>
                     <div class="col-md-6">
                       <div class="bg-light p-3 rounded-3 border">
@@ -3990,12 +4023,12 @@
                         </div>
                         <div class="d-flex justify-content-between align-items-center py-1 border-bottom">
                           <span class="text-muted small">Discount:</span>
-                          <input type="number" step="0.01" id="s-discount" class="form-control form-control-sm text-end w-50" value="0" oninput="calculateSaleTotals()">
+                          <input type="number" step="0.01" id="s-discount" class="form-control form-control-sm text-end w-50" value="${discountVal}" oninput="calculateSaleTotals()">
                         </div>
                         <div class="d-flex justify-content-between align-items-center py-1 border-bottom">
                           <span class="text-muted small">Tax / VAT (%):</span>
                           <div class="d-flex align-items-center w-50 gap-1">
-                            <input type="number" step="0.01" id="s-tax-rate" class="form-control form-control-sm text-end" value="${currentSettings.taxRate || 0}" oninput="calculateSaleTotals()">
+                            <input type="number" step="0.01" id="s-tax-rate" class="form-control form-control-sm text-end" value="${taxRateVal}" oninput="calculateSaleTotals()">
                             <span class="small text-muted">%</span>
                           </div>
                         </div>
@@ -4005,7 +4038,7 @@
                         </div>
                         <div class="d-flex justify-content-between align-items-center py-1 border-bottom">
                           <span class="text-muted small">Paid Amount:</span>
-                          <input type="number" step="0.01" id="s-paid" class="form-control form-control-sm text-end w-50 fw-semibold text-success" value="0" oninput="calculateSaleDue()">
+                          <input type="number" step="0.01" id="s-paid" class="form-control form-control-sm text-end w-50 fw-semibold text-success" value="${paidVal}" oninput="this.setAttribute('data-manual', 'true'); calculateSaleDue();">
                         </div>
                         <div class="d-flex justify-content-between py-1">
                           <span class="text-muted small">Due Amount:</span>
@@ -4015,11 +4048,18 @@
                     </div>
                   </div>
                 </div>
-                <div class="modal-footer">
-                  <button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancel</button>
-                  <button type="submit" class="btn btn-success px-4 fw-semibold" id="s-save-btn">
-                    <i class="bi bi-check2-circle me-1"></i>Complete & Save Invoice
-                  </button>
+                <div class="modal-footer d-flex justify-content-between">
+                  ${isEdit ? `
+                    <button type="button" class="btn btn-outline-danger" onclick="confirmDeleteSale('${saleId}', '${invNo}')">
+                      <i class="bi bi-trash me-1"></i>Delete Invoice
+                    </button>
+                  ` : '<div></div>'}
+                  <div>
+                    <button type="button" class="btn btn-light me-1" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn ${isEdit ? 'btn-warning text-dark' : 'btn-success'} px-4 fw-semibold" id="s-save-btn">
+                      <i class="bi bi-check2-circle me-1"></i>${isEdit ? 'Update & Save Invoice' : 'Complete & Save Invoice'}
+                    </button>
+                  </div>
                 </div>
               </form>
             </div>
@@ -4029,42 +4069,74 @@
 
       const modal = new bootstrap.Modal(document.getElementById('newSaleModal'));
       modal.show();
-      addSaleItemRow(); // Add first blank line
+
+      onSaleCustomerChange();
+
+      // Populate line items
+      if (isEdit && existingItems.length > 0) {
+        for (const it of existingItems) {
+          await addSaleItemRow(it);
+        }
+        const paidInput = document.getElementById('s-paid');
+        if (paidInput) {
+          paidInput.setAttribute('data-manual', 'true');
+        }
+        calculateSaleTotals();
+        if (paidInput) {
+          paidInput.value = Number(paidVal).toFixed(2);
+          calculateSaleDue();
+        }
+      } else {
+        await addSaleItemRow();
+        calculateSaleTotals();
+      }
     }
 
     function onSaleCustomerChange() {
       const sel = document.getElementById('s-customer');
+      if (!sel) return;
       const opt = sel.options[sel.selectedIndex];
       const due = opt ? opt.getAttribute('data-due') : 0;
       const hint = document.getElementById('s-cust-due-hint');
-      if (Number(due) > 0) {
-        hint.innerText = `Previous Due: ${formatMoney(due)}`;
-        hint.classList.remove('d-none');
-      } else {
-        hint.classList.add('d-none');
+      if (hint) {
+        if (Number(due) > 0) {
+          hint.innerText = `Previous Due: ${formatMoney(due)}`;
+          hint.classList.remove('d-none');
+        } else {
+          hint.classList.add('d-none');
+        }
       }
     }
 
     function toggleSaleBankSelect() {
-      const method = document.getElementById('s-pay-method').value;
+      const method = document.getElementById('s-pay-method')?.value;
       const bankCol = document.getElementById('s-bank-col');
       const paidInp = document.getElementById('s-paid');
-      if (method === 'Bank') {
-        bankCol.classList.remove('d-none');
-      } else {
-        bankCol.classList.add('d-none');
+      if (bankCol) {
+        if (method === 'Bank') {
+          bankCol.classList.remove('d-none');
+        } else {
+          bankCol.classList.add('d-none');
+        }
       }
 
-      if (method === 'Due') {
+      if (method === 'Due' && paidInp) {
         paidInp.value = 0;
+        paidInp.setAttribute('data-manual', 'true');
         calculateSaleDue();
       }
     }
 
-    async function addSaleItemRow() {
+    async function addSaleItemRow(initialItem = null) {
       const products = await dbGetAll('products');
       const tbody = document.getElementById('sale-items-tbody');
-      const rowId = 'sale-row-' + Date.now() + '-' + Math.floor(Math.random() * 100);
+      if (!tbody) return;
+      const rowId = 'sale-row-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
+
+      const initPId = initialItem ? initialItem.productId : '';
+      const initRate = initialItem ? Number(initialItem.saleRate) : 0;
+      const initQty = initialItem ? Number(initialItem.quantity) : 1;
+      const initTotal = initRate * initQty;
 
       const tr = document.createElement('tr');
       tr.id = rowId;
@@ -4072,28 +4144,41 @@
         <td>
           <select class="form-select form-select-sm item-prd-select" required onchange="onSaleItemProductSelect('${rowId}')">
             <option value="">-- Choose Product --</option>
-            ${products.filter(p => p.status === 'Active').map(p => `<option value="${p.id}" data-price="${p.salePrice}" data-cost="${p.purchasePrice}" data-stock="${p.currentStock}" data-sku="${p.sku}" data-name="${p.name}">${p.name} (Stock: ${p.currentStock})</option>`).join('')}
+            ${products.map(p => {
+              const isSelected = p.id === initPId;
+              const displayStock = isSelected && initialItem ? ((Number(p.currentStock) || 0) + (Number(initialItem.quantity) || 0)) : (Number(p.currentStock) || 0);
+              return `<option value="${p.id}" ${isSelected ? 'selected' : ''} data-price="${p.salePrice || 0}" data-cost="${p.purchasePrice || 0}" data-stock="${displayStock}" data-sku="${p.sku || ''}" data-name="${p.name}">${p.name} (Stock: ${displayStock})</option>`;
+            }).join('')}
           </select>
         </td>
         <td><span class="badge bg-light text-dark border item-stock-badge">0</span></td>
         <td>
-          <input type="number" step="0.01" class="form-control form-control-sm item-rate-input" value="0" required oninput="calculateSaleRow('${rowId}')">
+          <input type="number" step="0.01" class="form-control form-control-sm item-rate-input" value="${initRate}" required oninput="calculateSaleRow('${rowId}')">
         </td>
         <td>
-          <input type="number" min="1" step="1" class="form-control form-control-sm item-qty-input" value="1" required oninput="calculateSaleRow('${rowId}')">
+          <input type="number" min="1" step="1" class="form-control form-control-sm item-qty-input" value="${initQty}" required oninput="calculateSaleRow('${rowId}')">
         </td>
-        <td class="fw-bold text-end pe-3 item-line-total">৳ 0.00</td>
+        <td class="fw-bold text-end pe-3 item-line-total">${formatMoney(initTotal)}</td>
         <td class="text-center">
-          <button type="button" class="btn btn-sm btn-link text-danger p-0" onclick="removeSaleRow('${rowId}')">
+          <button type="button" class="btn btn-sm btn-link text-danger p-0" onclick="removeSaleRow('${rowId}')" title="Remove Item">
             <i class="bi bi-x-circle fs-6"></i>
           </button>
         </td>
       `;
       tbody.appendChild(tr);
+
+      if (initPId) {
+        const sel = tr.querySelector('.item-prd-select');
+        const opt = sel ? sel.options[sel.selectedIndex] : null;
+        if (opt) {
+          tr.querySelector('.item-stock-badge').innerText = opt.getAttribute('data-stock') || '0';
+        }
+      }
     }
 
     function onSaleItemProductSelect(rowId) {
       const row = document.getElementById(rowId);
+      if (!row) return;
       const sel = row.querySelector('.item-prd-select');
       const opt = sel.options[sel.selectedIndex];
       if (!opt || !opt.value) return;
@@ -4138,14 +4223,22 @@
       const taxAmount = (taxable * taxRate) / 100;
       calculatedGrandTotal = taxable + taxAmount;
 
-      document.getElementById('s-subtotal-disp').innerText = formatMoney(subtotal);
-      document.getElementById('s-grand-total-disp').innerText = formatMoney(calculatedGrandTotal);
+      const subtotalDisp = document.getElementById('s-subtotal-disp');
+      if (subtotalDisp) subtotalDisp.innerText = formatMoney(subtotal);
+      const grandDisp = document.getElementById('s-grand-total-disp');
+      if (grandDisp) grandDisp.innerText = formatMoney(calculatedGrandTotal);
 
-      // Auto set paid to grandTotal if payment method is cash/bank and user hasn't edited it
+      // Auto set paid to grandTotal if payment method is cash/bank and user hasn't edited it manually
       const method = document.getElementById('s-pay-method')?.value;
       const paidInp = document.getElementById('s-paid');
-      if (method !== 'Due') {
-        paidInp.value = calculatedGrandTotal.toFixed(2);
+      const isManual = paidInp?.getAttribute('data-manual') === 'true';
+
+      if (!isManual && paidInp) {
+        if (method === 'Due') {
+          paidInp.value = '0';
+        } else {
+          paidInp.value = calculatedGrandTotal.toFixed(2);
+        }
       }
       calculateSaleDue();
     }
@@ -4153,13 +4246,14 @@
     function calculateSaleDue() {
       const paid = parseFloat(document.getElementById('s-paid')?.value) || 0;
       const due = Math.max(0, calculatedGrandTotal - paid);
-      document.getElementById('s-due-disp').innerText = formatMoney(due);
+      const dueDisp = document.getElementById('s-due-disp');
+      if (dueDisp) dueDisp.innerText = formatMoney(due);
     }
 
-    async function handleSaveSale(e) {
+    async function handleSaveSale(e, editSaleId = null) {
       e.preventDefault();
       const saveBtn = document.getElementById('s-save-btn');
-      saveBtn.disabled = true;
+      if (saveBtn) saveBtn.disabled = true;
 
       try {
         const invoiceNo = document.getElementById('s-inv-no').value.trim();
@@ -4182,6 +4276,16 @@
         const lineItems = [];
         let subtotal = 0;
 
+        // If editing, load old sale and old items first
+        let oldSale = null;
+        let oldItems = [];
+        if (editSaleId) {
+          oldSale = await dbGet('sales', editSaleId);
+          if (!oldSale) throw new Error('Original sale invoice not found.');
+          const allItems = await dbGetAll('saleItems');
+          oldItems = allItems.filter(it => it.saleId === editSaleId);
+        }
+
         for (const r of itemRows) {
           const sel = r.querySelector('.item-prd-select');
           const pId = sel.value;
@@ -4191,15 +4295,22 @@
           const productName = opt.getAttribute('data-name');
           const sku = opt.getAttribute('data-sku');
           const purchaseRate = parseFloat(opt.getAttribute('data-cost')) || 0;
-          const currentStock = parseInt(opt.getAttribute('data-stock')) || 0;
+          const productInDb = await dbGet('products', pId);
+          const currentDbStock = productInDb ? (Number(productInDb.currentStock) || 0) : 0;
           const saleRate = parseFloat(r.querySelector('.item-rate-input').value) || 0;
           const qty = parseInt(r.querySelector('.item-qty-input').value) || 0;
 
           if (qty <= 0) throw new Error(`Invalid quantity for ${productName}`);
 
-          // Stock check
-          if (!currentSettings.allowNegativeStock && qty > currentStock) {
-            throw new Error(`Insufficient stock for "${productName}". Current stock is ${currentStock}, but entered ${qty}.`);
+          // Calculate available stock taking into account previous quantities on this same invoice
+          let availableStock = currentDbStock;
+          if (editSaleId) {
+            const oldQtyForProduct = oldItems.filter(o => o.productId === pId).reduce((sum, o) => sum + (Number(o.quantity) || 0), 0);
+            availableStock += oldQtyForProduct;
+          }
+
+          if (!currentSettings.allowNegativeStock && qty > availableStock) {
+            throw new Error(`Insufficient stock for "${productName}". Available stock is ${availableStock}, but requested ${qty}.`);
           }
 
           const lineTotal = saleRate * qty;
@@ -4213,7 +4324,7 @@
             saleRate,
             purchaseRate,
             total: lineTotal,
-            currentStock
+            availableStock
           });
         }
 
@@ -4224,7 +4335,52 @@
         const grandTotal = taxable + taxAmount;
         const dueAmount = Math.max(0, grandTotal - paidAmount);
 
-        const saleId = generateId('SAL');
+        const saleId = editSaleId || generateId('SAL');
+
+        // 1. If EDITING, revert old state first:
+        if (editSaleId && oldSale) {
+          // Revert old inventory stock
+          for (const oldItem of oldItems) {
+            const prd = await dbGet('products', oldItem.productId);
+            if (prd) {
+              prd.currentStock = (Number(prd.currentStock) || 0) + (Number(oldItem.quantity) || 0);
+              await dbPut('products', prd);
+            }
+            await dbDelete('saleItems', oldItem.id);
+          }
+
+          // Revert old customer due
+          const oldCust = await dbGet('customers', oldSale.customerId);
+          if (oldCust) {
+            oldCust.currentDue = Math.max(0, (Number(oldCust.currentDue) || 0) - (Number(oldSale.dueAmount) || 0));
+            await dbPut('customers', oldCust);
+          }
+
+          // Revert old bank balance if old payment was Bank
+          if (oldSale.paymentMethod === 'Bank' && oldSale.bankId && Number(oldSale.paidAmount) > 0) {
+            const oldBank = await dbGet('bankAccounts', oldSale.bankId);
+            if (oldBank) {
+              oldBank.currentBalance = (Number(oldBank.currentBalance) || 0) - Number(oldSale.paidAmount);
+              await dbPut('bankAccounts', oldBank);
+            }
+          }
+
+          // Remove old cash/bank transactions for this invoice reference
+          const allCash = await dbGetAll('cashTransactions');
+          for (const c of allCash) {
+            if (c.reference === oldSale.invoiceNo) {
+              await dbDelete('cashTransactions', c.id);
+            }
+          }
+          const allBankTx = await dbGetAll('bankTransactions');
+          for (const b of allBankTx) {
+            if (b.reference === oldSale.invoiceNo) {
+              await dbDelete('bankTransactions', b.id);
+            }
+          }
+        }
+
+        // 2. Prepare and save updated/new Sale record
         const saleRecord = {
           id: saleId,
           invoiceNo,
@@ -4234,20 +4390,22 @@
           subtotal,
           discount,
           tax: taxAmount,
+          taxRate,
           grandTotal,
           paidAmount,
           dueAmount,
           paymentMethod,
+          bankId: (paymentMethod === 'Bank') ? bankId : null,
           notes,
           status: 'Completed',
-          createdBy: currentUser ? currentUser.username : 'Admin',
-          createdAt: new Date().toISOString()
+          createdBy: (editSaleId && oldSale) ? (oldSale.createdBy || 'Admin') : (currentUser ? currentUser.username : 'Admin'),
+          createdAt: (editSaleId && oldSale) ? oldSale.createdAt : new Date().toISOString(),
+          updatedBy: currentUser ? currentUser.username : 'Admin',
+          updatedAt: new Date().toISOString()
         };
-
-        // 1. Save Sale
         await dbPut('sales', saleRecord);
 
-        // 2. Save Sale Items & Deduct Stock
+        // 3. Save new line items & Deduct Stock
         for (const item of lineItems) {
           await dbPut('saleItems', {
             id: generateId('SIT'),
@@ -4261,9 +4419,9 @@
             total: item.total
           });
 
-          // Deduct Product Stock
+          // Deduct Product Stock from restored/current state
           const product = await dbGet('products', item.productId);
-          const newStock = (product.currentStock || 0) - item.quantity;
+          const newStock = (Number(product.currentStock) || 0) - item.quantity;
           product.currentStock = newStock;
           await dbPut('products', product);
 
@@ -4273,9 +4431,9 @@
             date: new Date().toISOString(),
             productId: item.productId,
             productName: item.productName,
-            type: 'Sale (Out)',
+            type: editSaleId ? 'Sale (Edit Adjustment)' : 'Sale (Out)',
             quantity: -item.quantity,
-            previousStock: item.currentStock,
+            previousStock: newStock + item.quantity,
             newStock: newStock,
             reference: invoiceNo,
             user: currentUser ? currentUser.username : 'Sales',
@@ -4283,28 +4441,45 @@
           });
         }
 
-        // 3. Update Customer Balance & Customer Ledger
-        customer.currentDue = (customer.currentDue || 0) + dueAmount;
-        await dbPut('customers', customer);
+        // 4. Update Customer Balance & Customer Ledger
+        // Re-fetch customer to get the balance after any revert
+        const currentCust = await dbGet('customers', customerId);
+        currentCust.currentDue = (Number(currentCust.currentDue) || 0) + dueAmount;
+        await dbPut('customers', currentCust);
 
-        await dbPut('customerTransactions', {
-          id: generateId('CTX'),
-          date: date,
-          customerId: customerId,
-          type: 'Sale Invoice',
-          description: `Sale invoice #${invoiceNo} (Total: ${grandTotal}, Paid: ${paidAmount})`,
-          debit: grandTotal,
-          credit: paidAmount,
-          balance: customer.currentDue,
-          reference: invoiceNo
-        });
+        // Update or insert Customer Transaction
+        const allCustTxs = await dbGetAll('customerTransactions');
+        const existingCustTx = editSaleId && oldSale ? allCustTxs.find(t => t.reference === oldSale.invoiceNo) : null;
+        if (existingCustTx) {
+          existingCustTx.date = date;
+          existingCustTx.customerId = customerId;
+          existingCustTx.type = 'Sale Invoice';
+          existingCustTx.description = `Sale invoice #${invoiceNo} (Updated - Total: ${grandTotal}, Paid: ${paidAmount})`;
+          existingCustTx.debit = grandTotal;
+          existingCustTx.credit = paidAmount;
+          existingCustTx.balance = currentCust.currentDue;
+          existingCustTx.reference = invoiceNo;
+          await dbPut('customerTransactions', existingCustTx);
+        } else {
+          await dbPut('customerTransactions', {
+            id: generateId('CTX'),
+            date: date,
+            customerId: customerId,
+            type: 'Sale Invoice',
+            description: editSaleId ? `Sale invoice #${invoiceNo} (Updated - Total: ${grandTotal}, Paid: ${paidAmount})` : `Sale invoice #${invoiceNo} (Total: ${grandTotal}, Paid: ${paidAmount})`,
+            debit: grandTotal,
+            credit: paidAmount,
+            balance: currentCust.currentDue,
+            reference: invoiceNo
+          });
+        }
 
-        // 4. Update Cash or Bank Balance
+        // 5. Update Cash or Bank Balance
         if (paidAmount > 0) {
           if (paymentMethod === 'Bank' && bankId) {
             const bank = await dbGet('bankAccounts', bankId);
             if (bank) {
-              bank.currentBalance = (bank.currentBalance || 0) + paidAmount;
+              bank.currentBalance = (Number(bank.currentBalance) || 0) + paidAmount;
               await dbPut('bankAccounts', bank);
               await dbPut('bankTransactions', {
                 id: generateId('BTX'),
@@ -4313,7 +4488,7 @@
                 type: 'Deposit (Sale Payment)',
                 amount: paidAmount,
                 reference: invoiceNo,
-                description: `Payment for Sale Invoice #${invoiceNo}`,
+                description: editSaleId ? `Payment for Sale Invoice #${invoiceNo} (Updated)` : `Payment for Sale Invoice #${invoiceNo}`,
                 user: currentUser ? currentUser.username : 'Sales',
                 createdAt: new Date().toISOString()
               });
@@ -4327,22 +4502,182 @@
               amount: paidAmount,
               category: 'Sales Payment',
               reference: invoiceNo,
-              description: `Cash received for Sale Invoice #${invoiceNo}`,
+              description: editSaleId ? `Cash received for Sale Invoice #${invoiceNo} (Updated)` : `Cash received for Sale Invoice #${invoiceNo}`,
               user: currentUser ? currentUser.username : 'Sales',
               createdAt: new Date().toISOString()
             });
           }
         }
 
-        await logAudit('Sale', invoiceNo, `Sale invoice created for ${customer.name}, total ${formatMoney(grandTotal)}`);
-        bootstrap.Modal.getInstance(document.getElementById('newSaleModal')).hide();
-        showToast(`Invoice ${invoiceNo} generated successfully!`, 'success');
-
+        // 6. Audit & Notification
+        await logAudit(editSaleId ? 'Sale Edit' : 'Sale', invoiceNo, `Sale invoice #${invoiceNo} ${editSaleId ? 'edited and updated' : 'created'} for ${customer.name}, total ${formatMoney(grandTotal)}`);
+        
+        const modalInstance = bootstrap.Modal.getInstance(document.getElementById('newSaleModal'));
+        if (modalInstance) modalInstance.hide();
+        
+        showToast(`Invoice ${invoiceNo} ${editSaleId ? 'updated' : 'generated'} successfully!`, 'success');
         renderNotifications();
-        previewInvoice(saleId); // Open invoice preview immediately for printing!
+        
+        // Refresh active sales view if currently on sales page
+        if (activePage === 'sales') {
+          const container = document.getElementById('main-view-container');
+          if (container) await renderSalesView(container);
+        } else if (activePage === 'dashboard') {
+          const container = document.getElementById('main-view-container');
+          if (container) await renderDashboardView(container);
+        }
+
+        previewInvoice(saleId);
       } catch (err) {
         alert(err.message);
-        saveBtn.disabled = false;
+        if (saveBtn) saveBtn.disabled = false;
+      }
+    }
+
+    // Delete Sale Invoice and accurately revert stock, ledger & payments
+    async function confirmDeleteSale(saleId, invoiceNo) {
+      const sale = await dbGet('sales', saleId);
+      if (!sale) {
+        showToast('Sale invoice not found.', 'danger');
+        return;
+      }
+
+      // Check if any sales returns exist for this invoice
+      const allReturns = await dbGetAll('salesReturns') || [];
+      const linkedReturns = allReturns.filter(r => r.saleId === saleId || r.saleInvoiceNo === sale.invoiceNo);
+      if (linkedReturns.length > 0) {
+        alert(`Cannot delete Invoice #${sale.invoiceNo} because there are ${linkedReturns.length} Sales Return(s) linked to it. Please remove or handle the sales return(s) first.`);
+        return;
+      }
+
+      const allItems = await dbGetAll('saleItems');
+      const items = allItems.filter(it => it.saleId === saleId);
+      const itemCount = items.length;
+
+      const confirmed = confirm(
+        `⚠️ DELETE INVOICE #${sale.invoiceNo}?\n\n` +
+        `Customer: ${sale.customerName || 'Walk-in'}\n` +
+        `Total: ${formatMoney(sale.grandTotal)}\n` +
+        `Paid: ${formatMoney(sale.paidAmount)} | Due: ${formatMoney(sale.dueAmount)}\n` +
+        `Line Items: ${itemCount} products\n\n` +
+        `This will restore product quantities back to stock inventory and revert customer & financial balances.\n\n` +
+        `Are you sure you want to permanently delete this invoice?`
+      );
+
+      if (!confirmed) return;
+
+      await executeDeleteSale(saleId);
+    }
+
+    async function executeDeleteSale(saleId) {
+      try {
+        const sale = await dbGet('sales', saleId);
+        if (!sale) throw new Error('Invoice not found');
+
+        const invoiceNo = sale.invoiceNo;
+        const allItems = await dbGetAll('saleItems');
+        const items = allItems.filter(it => it.saleId === saleId);
+
+        // 1. Revert product stock & delete line items
+        for (const item of items) {
+          const prd = await dbGet('products', item.productId);
+          if (prd) {
+            const prevStock = Number(prd.currentStock) || 0;
+            const restoredStock = prevStock + (Number(item.quantity) || 0);
+            prd.currentStock = restoredStock;
+            await dbPut('products', prd);
+
+            // Record stock movement for ledger transparency
+            await dbPut('stockMovements', {
+              id: generateId('STK'),
+              date: new Date().toISOString(),
+              productId: item.productId,
+              productName: item.productName,
+              type: 'Sale Deletion (Restock)',
+              quantity: Number(item.quantity) || 0,
+              previousStock: prevStock,
+              newStock: restoredStock,
+              reference: invoiceNo,
+              user: currentUser ? currentUser.username : 'Admin',
+              createdAt: new Date().toISOString()
+            });
+          }
+          await dbDelete('saleItems', item.id);
+        }
+
+        // 2. Revert Customer due balance
+        if (sale.customerId && Number(sale.dueAmount) > 0) {
+          const cust = await dbGet('customers', sale.customerId);
+          if (cust) {
+            cust.currentDue = Math.max(0, (Number(cust.currentDue) || 0) - (Number(sale.dueAmount) || 0));
+            await dbPut('customers', cust);
+          }
+        }
+
+        // Remove Customer Transactions for this invoice
+        const allCustTxs = await dbGetAll('customerTransactions');
+        for (const ctx of allCustTxs) {
+          if (ctx.reference === invoiceNo) {
+            await dbDelete('customerTransactions', ctx.id);
+          }
+        }
+
+        // 3. Revert Bank Account balance if paid through Bank
+        if (sale.paymentMethod === 'Bank' && sale.bankId && Number(sale.paidAmount) > 0) {
+          const bank = await dbGet('bankAccounts', sale.bankId);
+          if (bank) {
+            bank.currentBalance = (Number(bank.currentBalance) || 0) - Number(sale.paidAmount);
+            await dbPut('bankAccounts', bank);
+          }
+          const allBankTx = await dbGetAll('bankTransactions');
+          for (const b of allBankTx) {
+            if (b.reference === invoiceNo) {
+              await dbDelete('bankTransactions', b.id);
+            }
+          }
+        }
+
+        // Remove Cash transaction if paid by Cash
+        if (sale.paymentMethod !== 'Bank' && Number(sale.paidAmount) > 0) {
+          const allCash = await dbGetAll('cashTransactions');
+          for (const c of allCash) {
+            if (c.reference === invoiceNo) {
+              await dbDelete('cashTransactions', c.id);
+            }
+          }
+        }
+
+        // 4. Delete the sale invoice record itself
+        await dbDelete('sales', sale.id);
+
+        // 5. Audit Log
+        await logAudit(
+          'Sale Deletion',
+          invoiceNo,
+          `Sale invoice #${invoiceNo} (${formatMoney(sale.grandTotal)}) deleted by ${currentUser ? currentUser.username : 'Admin'}. Stock and balances restored.`
+        );
+
+        // Close any open modals
+        const invModal = bootstrap.Modal.getInstance(document.getElementById('invoiceModal'));
+        if (invModal) invModal.hide();
+        const saleModal = bootstrap.Modal.getInstance(document.getElementById('newSaleModal'));
+        if (saleModal) saleModal.hide();
+
+        showToast(`Invoice #${invoiceNo} deleted successfully!`, 'info');
+        renderNotifications();
+
+        // Refresh current active view
+        if (activePage === 'sales') {
+          const container = document.getElementById('main-view-container');
+          if (container) await renderSalesView(container);
+        } else if (activePage === 'dashboard') {
+          const container = document.getElementById('main-view-container');
+          if (container) await renderDashboardView(container);
+        } else {
+          await navigateTo(activePage);
+        }
+      } catch (err) {
+        alert('Failed to delete invoice: ' + err.message);
       }
     }
 
@@ -4363,6 +4698,12 @@
               <div class="modal-header border-bottom bg-light">
                 <h5 class="modal-title fw-bold text-dark"><i class="bi bi-file-earmark-text text-primary me-2"></i>Invoice #${sale.invoiceNo}</h5>
                 <div>
+                  <button class="btn btn-outline-danger btn-sm me-2 shadow-sm" onclick="confirmDeleteSale('${sale.id}', '${sale.invoiceNo}')">
+                    <i class="bi bi-trash me-1"></i>Delete Invoice
+                  </button>
+                  <button class="btn btn-outline-secondary btn-sm me-2 shadow-sm" onclick="bootstrap.Modal.getInstance(document.getElementById('invoiceModal'))?.hide(); openSaleModal('${sale.id}');">
+                    <i class="bi bi-pencil-square me-1"></i>Edit Invoice
+                  </button>
                   <button class="btn btn-primary btn-sm me-2 shadow-sm" onclick="printElement('invoice-print-area')">
                     <i class="bi bi-printer me-1"></i>Print A4 Invoice
                   </button>

@@ -111,9 +111,14 @@
         "paidAmount": { "type": "number" },
         "dueAmount": { "type": "number" },
         "paymentMethod": { "type": "string" },
+        "bankId": { "type": "string" },
+        "taxRate": { "type": "number" },
         "notes": { "type": "string" },
         "user": { "type": "string" },
-        "createdAt": { "type": "string" }
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedBy": { "type": "string" },
+        "updatedAt": { "type": "string" }
       },
       "required": ["id", "invoiceNo", "date", "grandTotal"]
     },
